@@ -70,6 +70,8 @@ def run(adj, raw, tickers, mode):
         bal *= 1 + r
         rows.append({"month": str(t1.to_period("M")), "ret": r, "bal": bal,
                      "w": {x: round(w[x], 4) for x in top}, "cash": round(cash, 4)})
+    ntop, nw, ncash = signal(sig_px, tickers, me[-1], mode)
+    nxt = {"hold": str(me[-1].to_period("M") + 1), "w": {x: round(nw[x], 4) for x in ntop}, "cash": round(ncash, 4)}
     rets = pd.Series([x["ret"] for x in rows])
     n = len(rets)
     cagr = bal ** (12 / n) - 1
@@ -77,7 +79,7 @@ def run(adj, raw, tickers, mode):
     mdd = float((eq / eq.cummax().clip(lower=1) - 1).min())
     sd = float(rets.std(ddof=1) * math.sqrt(12))
     return {"cagr": cagr, "mdd": mdd, "stdev": sd, "end": bal * 10000, "months": n,
-            "best": float(rets.max()), "worst": float(rets.min()), "rows": rows}
+            "best": float(rets.max()), "worst": float(rets.min()), "rows": rows, "next": nxt}
 
 
 def main():
