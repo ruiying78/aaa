@@ -163,6 +163,34 @@ def compute(daily):
                 port_vol=port_vol, target=tv, k=k, final=final, cash=1 - final.sum(), vwin=vwin)
 
 
+def monthly_signals(daily, n=12):
+    """지난 n개월 각 월말 기준 신호 (월말 리밸런싱 → 다음 달 보유)"""
+    out = []
+    month_ends = daily.groupby(daily.index.to_period("M")).tail(1).index
+    month_ends = [d for d in month_ends if d.to_period("M") < daily.index[-1].to_period("M")]
+    for me in month_ends[-n:]:
+        sub = daily[daily.index <= me]
+        if len(to_monthly(sub)) < LOOKBACK_MONTHS + 1:
+            continue
+        cal_end = me.to_period("M").end_time.normalize()
+        score = momentum_scores(to_monthly(sub))
+        top = select_top(score)
+        row = {"rebal": me, "hold": (me.to_period("M") + 1).strftime("%Y-%m"), "top": top, "w": {}, "cash": 1.0}
+        if top:
+            rets = sub[top].pct_change().dropna()
+            vs, ve = vol_window(sub, today=cal_end)
+            rets = rets[(rets.index >= vs) & (rets.index <= ve)]
+            vol = rets.std(ddof=1)
+            inv = vol.apply(lambda v: 0 if v == 0 else 1 / v)
+            w = inv / inv.sum()
+            pv = (rets * w).sum(axis=1).std(ddof=1) * ANNUAL
+            k = min(1.0, target_vol(pv) / pv) if pv > 0 else 1.0
+            row["w"] = {t: float(w[t] * k) for t in top}
+            row["cash"] = 1 - sum(row["w"].values())
+        out.append(row)
+    return out
+
+
 def order_table(res, daily, capital, fx, holdings):
     last = daily.iloc[-1]
     rows = []
@@ -204,7 +232,7 @@ def pct(v, d=2):
     return "" if v is None or (isinstance(v, float) and math.isnan(v)) else f"{v*100:.{d}f}%"
 
 
-def build_html(res, daily, rows, hist, capital, fx):
+def build_html(res, daily, rows, hist, capital, fx, msig=None):
     asof = daily.index[-1].strftime("%Y-%m-%d")
     kst = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
     src = daily.attrs.get("source", {})
@@ -260,6 +288,14 @@ def build_html(res, daily, rows, hist, capital, fx):
     detail = "".join(f"<tr><td class='tk'>{e(t)}</td><td class='num'>{pct(res['vol'][t],3)}</td>"
                      f"<td class='num'>{pct(res['w'][t],1)}</td></tr>" for t in res["top"])
 
+    # 월별 신호 표
+    mtab = ""
+    for m in reversed(msig or []):
+        cells = " · ".join(f"{e(t)} {m['w'].get(t,0)*100:.1f}%" for t in m["top"]) or "전액 현금"
+        if m["cash"] > 0.0005 and m["top"]:
+            cells += f" · 현금 {m['cash']*100:.1f}%"
+        mtab += f"<tr><td style='white-space:nowrap'><b>{m['hold']}</b></td><td style='text-align:left'>{cells}</td></tr>"
+
     # 이력
     hrows = ""
     for h in reversed(hist[-15:]):
@@ -303,6 +339,9 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 <section><h2>Top{TOP_N} 최종 매수비중 (RP × k)</h2>{cards or '<p>컷오프 통과 종목 없음 → 전액 현금</p>'}</section>
 {orders}
 <section><h2>모멘텀 스코어 (1~6M 평균, 컷오프 {CUTOFF*100:.0f}%)</h2><table>{mom}</table></section>
+<section><h2>월별 매수 종목 (전월 말 리밸런싱 기준)</h2>
+<div class="scroll"><table><tr><th style="text-align:left">보유월</th><th style="text-align:left">Top5 · 최종비중</th></tr>{mtab}</table></div>
+<p class="muted">예) 2026-10 = 9월 말 종가로 계산해 10월 한 달 보유한 종목</p></section>
 <section><details><summary>리스크패리티 상세 (변동성 기간 {vtxt})</summary>
 <table><tr><th>종목</th><th>일변동성</th><th>RP비중</th></tr>{detail}</table>
 <p class="muted">Target {pct(res['target'],0)} / 포트변동성 {pct(res['port_vol'],2)} → k = min(1, Target/포트변동성)</p></details></section>
@@ -364,7 +403,7 @@ def main():
     holdings = None if a.public else cfg.get("holdings")
     fx = cfg.get("fx_krw") or None
 
-    start = date.today() - timedelta(days=330)
+    start = date.today() - timedelta(days=640)
     print("가격 데이터 수집 중...")
     daily = load_prices(UNIVERSE, start)
     src = daily.attrs.get("source", {})
@@ -381,7 +420,7 @@ def main():
     hist = update_history(os.path.join(os.path.dirname(os.path.abspath(a.out)), "history.json"), asof, res)
 
     with open(a.out, "w", encoding="utf-8") as f:
-        f.write(build_html(res, daily, rows, hist, capital, fx))
+        f.write(build_html(res, daily, rows, hist, capital, fx, monthly_signals(daily)))
     print(f"\n기준일 {asof}  Top5: {', '.join(res['top'])}")
     for t in res["top"]:
         print(f"  {t:5s} {res['final'][t]:7.2%}")
