@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: mkdir -p docs && python backtest.py docs/backtest.json && python backtest_long.py docs/backtest_long.json
+      - run: mkdir -p docs && python backtest.py docs/backtest.json && python backtest_long.py docs/backtest_long.json && python grid.py docs/grid.json
       - name: 결과 커밋
         run: |
           git config user.name "aaa-bot"
