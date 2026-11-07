@@ -132,6 +132,19 @@ def monthly_signals(adj, n=12):
     return out
 
 
+def month_to_date(adj, msig):
+    """이번 달 보유분(전월 말 신호)의 월초 이후 수익률"""
+    if not msig:
+        return None
+    cur = msig[-1]
+    if cur["hold"] != str(adj.index[-1].to_period("M")):
+        return None
+    d0 = month_ends(adj).index[-2]
+    r = {t: float(adj[t].iloc[-1] / adj.at[d0, t] - 1) for t in cur["final"]}
+    total = sum(w * r[t] for t, w in cur["final"].items())
+    return {"hold": cur["hold"], "from": d0, "to": adj.index[-1], "w": cur["final"], "r": r, "total": total}
+
+
 def order_table(res, raw, capital, fx, holdings):
     last = raw.ffill().iloc[-1]
     rows = []
@@ -178,7 +191,7 @@ def bars(weights, cls=""):
                    for t, w in weights.items())
 
 
-def build_html(res, adj, rows, hist, msig, capital, fx, src):
+def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
     e = html.escape
     asof = adj.index[-1].strftime("%Y-%m-%d")
     kst = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
@@ -226,6 +239,16 @@ def build_html(res, adj, rows, hist, msig, capital, fx, src):
         r_ = sorted(set(hist[-2]["top"]) - set(hist[-1]["top"]))
         change = f"<div class='alert'>직전 실행({hist[-2]['date']}) 대비 Top5 변경 — 편입: {', '.join(a) or '-'} / 편출: {', '.join(r_) or '-'}</div>"
 
+    mtd_html = ""
+    if mtd:
+        rws = "".join(f"<tr><td class='tk'>{e(t)}</td><td class='num'>{pct(w)}</td>"
+                      f"<td class='num {'buy' if mtd['r'][t] >= 0 else 'sell'}'>{mtd['r'][t]*100:+.2f}%</td>"
+                      f"<td class='num'>{w*mtd['r'][t]*100:+.2f}%p</td></tr>" for t, w in mtd["w"].items())
+        tc = "buy" if mtd["total"] >= 0 else "sell"
+        mtd_html = (f"<section><h2>{mtd['hold']} 보유분 수익률 <span class='{tc}'>{mtd['total']*100:+.2f}%</span></h2>"
+                    f"<p class='muted'>{mtd['from']:%Y-%m-%d} 종가 → {mtd['to']:%Y-%m-%d} 종가 · 배당 포함</p>"
+                    f"<table><tr><th>종목</th><th>비중</th><th>수익률</th><th>기여도</th></tr>{rws}</table></section>")
+
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>AAA+DM 리밸런싱 {asof}</title>
 <style>
@@ -249,7 +272,8 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 <header><h1>AAA + 듀얼모멘텀 50:50 · 리밸런싱 신호</h1>
 <div class="muted">가격 기준일 {asof} · 갱신 {kst} KST · 데이터 {e(src)} · 6개월 총수익률 · Top{TOP_N}</div></header>
 {change}
-<section><h2>최종 매수 비중</h2>{bars(res['final'])}</section>
+{mtd_html}
+<section><h2>다음 리밸런싱 예상 비중</h2>{bars(res['final'])}</section>
 {orders}
 <div class="grid2 wrap"><section><h2>AAA 50% (리스크패리티)</h2>{bars(res['aaa'])}</section>
 <section><h2>듀얼모멘텀 50% (각 20%)</h2>{bars(res['dm'], 't2')}</section></div>
@@ -298,7 +322,7 @@ def main():
     hist = update_history(os.path.join(os.path.dirname(os.path.abspath(a.out)), "history.json"), asof, res)
     msig = monthly_signals(adj)
     with open(a.out, "w", encoding="utf-8") as f:
-        f.write(build_html(res, adj, rows, hist, msig, capital, fx, src))
+        f.write(build_html(res, adj, rows, hist, msig, capital, fx, src, month_to_date(adj, msig)))
     print(f"\n기준일 {asof}  Top5: {', '.join(res['top'])}")
     for t, w in res["final"].items():
         print(f"  {t:5s} {w:7.2%}")
