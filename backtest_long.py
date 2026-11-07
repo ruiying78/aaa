@@ -32,14 +32,34 @@ def stats(rets):
             "worst_month": float(rets.min()), "growth": float(eq.iloc[-1])}
 
 
+def dm_signal(px, tickers, t, base):
+    """듀얼 모멘텀: 상위 5종목 각 20%, 점수 < 0 이면 그 몫을 BIL로"""
+    sub = px.loc[:t, tickers].dropna(how="all")
+    m = sub.groupby(sub.index.to_period("M")).tail(1)
+    cur = m.iloc[-1]
+    if base == "pv":
+        score = (cur / m.iloc[-7] - 1).dropna()
+    else:
+        score = (sum((cur / m.iloc[-1 - k] - 1) for k in range(1, 7)) / 6).dropna()
+    top = sorted(score.index, key=lambda x: (-score[x], tickers.index(x)))[:5]
+    w = {}
+    for x in top:
+        k = x if score[x] >= 0 else "BIL"
+        w[k] = w.get(k, 0) + 0.2
+    return list(w), w, 0.0
+
+
 def run(adj, raw, tickers, mode, first_sig):
-    sig_px = adj if mode == "pv" else raw
+    sig_px = adj if mode in ("pv", "dm_pv") else raw
     me = adj.groupby(adj.index.to_period("M")).tail(1).index
     me = [d for d in me if first_sig <= d.to_period("M") <= pd.Period(END)]
     rows = []
     for i in range(len(me) - 1):
         t, t1 = me[i], me[i + 1]
-        top, w, cash = signal(sig_px, tickers, t, mode)
+        if mode.startswith("dm_"):
+            top, w, cash = dm_signal(sig_px, tickers, t, mode[3:])
+        else:
+            top, w, cash = signal(sig_px, tickers, t, mode)
         r = sum(w[x] * (adj.at[t1, x] / adj.at[t, x] - 1) for x in top)
         rows.append({"month": str(t1.to_period("M")), "ret": float(r), "top": top})
     return rows
@@ -60,7 +80,7 @@ def main():
     first_sig = first_valid.to_period("M") + 7          # 6개월 모멘텀 + 첫 달 온전한 데이터
     res = {"first_holding_month": str(first_sig + 1)}
     for name, tk in [("U10", U10)]:
-        for mode in ["pv", "excel"]:
+        for mode in ["pv", "excel", "dm_pv", "dm_excel"]:
             rows = run(adj, raw, tk, mode, first_sig)
             rets = [r["ret"] for r in rows]
             res[f"{mode}_{name}"] = {"full": stats(rets), "last5y": stats(rets[-60:]),
