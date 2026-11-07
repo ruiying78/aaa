@@ -2,18 +2,18 @@
  {
   "date": "2026-11-06",
   "top": [
-   "BITO",
    "PDBC",
-   "IYR",
    "DBMF",
-   "SGOV"
+   "IYR",
+   "SGOV",
+   "BITO"
   ],
   "weights": {
-   "BITO": 0.0209,
-   "PDBC": 0.0454,
-   "IYR": 0.0598,
-   "DBMF": 0.0755,
-   "SGOV": 0.7985
+   "SGOV": 0.5778,
+   "DBMF": 0.1083,
+   "IYR": 0.1066,
+   "PDBC": 0.105,
+   "BITO": 0.1023
   }
  }
 ]
