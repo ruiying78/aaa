@@ -34,8 +34,7 @@ MOM_WEIGHTS = [1 / 6] * 6
 # MOM_WEIGHTS = [0.185185, 0.185185, 0.185185, 0.148148, 0.148148, 0.148148]
 CUTOFF = -0.02          # 모멘텀 컷오프 (H3)
 TOP_N = 5
-VOL_WINDOW = 64         # 종목 변동성: 일별수익률 64개 (엑셀 G3:G67)
-PORT_VOL_WINDOW = 63    # 포트 변동성: 63개 (엑셀 L3:L66)
+VOL_MONTHS = 3          # 변동성: 직전 완료된 달력상 3개월 (D월 1일 ~ D+2월 말일)
 ANNUAL = math.sqrt(252)
 
 
@@ -120,16 +119,33 @@ def select_top(score):
     return order[:TOP_N]
 
 
+def vol_window(daily, today=None):
+    """실행일(베이징 날짜) 기준 달력상 VOL_MONTHS개월.
+    실행일이 말일이면 그 달까지 포함, 아니면 직전 달까지.
+    예) 11/7 → 8/1~10/31, 11/30 → 9/1~11/30, 12/1 → 9/1~11/30"""
+    if today is None:
+        today = datetime.now(timezone(timedelta(hours=8))).date()
+    today = pd.Timestamp(today)
+    end_month = today.to_period("M")
+    if today.day != today.days_in_month:
+        end_month -= 1
+    start = (end_month - (VOL_MONTHS - 1)).start_time
+    end = end_month.end_time
+    return start, end
+
+
 def risk_parity(daily, top):
-    rets = daily[top].pct_change().dropna().tail(VOL_WINDOW)
+    start, end = vol_window(daily)
+    rets = daily[top].pct_change().dropna()
+    rets = rets[(rets.index >= start) & (rets.index <= end)]
     vol = rets.std(ddof=1)
     inv = vol.apply(lambda v: 0 if v == 0 else 1 / v)
     w = inv / inv.sum()
     port = (rets * w).sum(axis=1)
-    port_vol = port.iloc[:PORT_VOL_WINDOW].std(ddof=1) * ANNUAL  # 엑셀 L3:L66 범위
+    port_vol = port.std(ddof=1) * ANNUAL
     tv = target_vol(port_vol)
     k = min(1.0, tv / port_vol) if port_vol > 0 else 1.0
-    return vol, w, port_vol, tv, k
+    return vol, w, port_vol, tv, k, (rets.index[0], rets.index[-1], len(rets))
 
 
 def compute(daily):
@@ -140,11 +156,11 @@ def compute(daily):
     top = select_top(score)
     if not top:
         return dict(monthly=monthly, score=score, top=[], vol=pd.Series(dtype=float), w=pd.Series(dtype=float),
-                    port_vol=0.0, target=1.0, k=1.0, final=pd.Series(dtype=float), cash=1.0)
-    vol, w, port_vol, tv, k = risk_parity(daily, top)
+                    port_vol=0.0, target=1.0, k=1.0, final=pd.Series(dtype=float), cash=1.0, vwin=None)
+    vol, w, port_vol, tv, k, vwin = risk_parity(daily, top)
     final = w * k
     return dict(monthly=monthly, score=score, top=top, vol=vol, w=w,
-                port_vol=port_vol, target=tv, k=k, final=final, cash=1 - final.sum())
+                port_vol=port_vol, target=tv, k=k, final=final, cash=1 - final.sum(), vwin=vwin)
 
 
 def order_table(res, daily, capital, fx, holdings):
@@ -239,6 +255,8 @@ def build_html(res, daily, rows, hist, capital, fx):
 <div class="scroll"><table class="grid"><tr>{head}</tr>{body}</table></div></section>"""
 
     # 변동성 상세
+    vw = res.get("vwin")
+    vtxt = f"{vw[0]:%Y-%m-%d} ~ {vw[1]:%Y-%m-%d}, {vw[2]}영업일" if vw else "-"
     detail = "".join(f"<tr><td class='tk'>{e(t)}</td><td class='num'>{pct(res['vol'][t],3)}</td>"
                      f"<td class='num'>{pct(res['w'][t],1)}</td></tr>" for t in res["top"])
 
@@ -285,7 +303,7 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 <section><h2>Top{TOP_N} 최종 매수비중 (RP × k)</h2>{cards or '<p>컷오프 통과 종목 없음 → 전액 현금</p>'}</section>
 {orders}
 <section><h2>모멘텀 스코어 (1~6M 평균, 컷오프 {CUTOFF*100:.0f}%)</h2><table>{mom}</table></section>
-<section><details><summary>리스크패리티 상세 (일변동성 {VOL_WINDOW}일)</summary>
+<section><details><summary>리스크패리티 상세 (변동성 기간 {vtxt})</summary>
 <table><tr><th>종목</th><th>일변동성</th><th>RP비중</th></tr>{detail}</table>
 <p class="muted">Target {pct(res['target'],0)} / 포트변동성 {pct(res['port_vol'],2)} → k = min(1, Target/포트변동성)</p></details></section>
 <section><details><summary>실행 이력</summary><table><tr><th>날짜</th><th style="text-align:left">Top5</th></tr>{hrows}</table></details></section>
@@ -308,7 +326,10 @@ def update_excel(path, daily, res, out_path):
         for j, t in enumerate(header):
             m_ws.cell(4 + i, 2 + j, float(r[t]))
     a_ws["B3"] = monthly.index[-1].to_pydatetime()
-    d = daily[res["top"]].dropna().tail(VOL_WINDOW + 1)
+    vs, _ = vol_window(daily)
+    d = daily[res["top"]].dropna()
+    prev = d[d.index < vs].tail(1)  # 첫 수익률 계산용 직전 종가 (엑셀 D_Price 3행)
+    d = pd.concat([prev, d[(d.index >= vs) & (d.index <= res["vwin"][1])]])
     for rr in range(3, d_ws.max_row + 1):
         for cc in range(1, 7):
             d_ws.cell(rr, cc).value = None
