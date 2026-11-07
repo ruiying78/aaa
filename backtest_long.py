@@ -93,6 +93,10 @@ def main():
             mrows = [{"month": x["month"], "ret": 0.5 * x["ret"] + 0.5 * y["ret"]} for x, y in zip(ra, rb)]
             mr = [r["ret"] for r in mrows]
             res[f"{nm}_{name}"] = {"full": stats(mr), "last5y": stats(mr[-60:]), "yearly": yearly(mrows)}
+        four = [series[f"{m}_{name}"] for m in ["pv", "excel", "dm_pv", "dm_excel"]]
+        qrows = [{"month": rs[0]["month"], "ret": sum(r["ret"] for r in rs) / 4} for rs in zip(*four)]
+        qr = [r["ret"] for r in qrows]
+        res[f"mix4_{name}"] = {"full": stats(qr), "last5y": stats(qr[-60:]), "yearly": yearly(qrows)}
     # 벤치마크: SPY 보유
     me = adj.groupby(adj.index.to_period("M")).tail(1)
     me = me[(me.index.to_period("M") >= first_sig) & (me.index.to_period("M") <= pd.Period(END))]
