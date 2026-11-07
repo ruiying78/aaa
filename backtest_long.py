@@ -79,6 +79,7 @@ def main():
     first_valid = max(adj[t].first_valid_index() for t in ALL)
     first_sig = first_valid.to_period("M") + 7          # 6개월 모멘텀 + 첫 달 온전한 데이터
     res = {"first_holding_month": str(first_sig + 1)}
+    series = {}
     for name, tk in [("U10", U10)]:
         for mode in ["pv", "excel", "dm_pv", "dm_excel"]:
             rows = run(adj, raw, tk, mode, first_sig)
@@ -86,6 +87,12 @@ def main():
             res[f"{mode}_{name}"] = {"full": stats(rets), "last5y": stats(rets[-60:]),
                                      "period": [rows[0]["month"], rows[-1]["month"]],
                                      "yearly": yearly(rows)}
+            series[f"{mode}_{name}"] = rows
+        for a, b, nm in [("pv", "dm_pv", "mix_pv"), ("excel", "dm_excel", "mix_excel")]:
+            ra, rb = series[f"{a}_{name}"], series[f"{b}_{name}"]
+            mrows = [{"month": x["month"], "ret": 0.5 * x["ret"] + 0.5 * y["ret"]} for x, y in zip(ra, rb)]
+            mr = [r["ret"] for r in mrows]
+            res[f"{nm}_{name}"] = {"full": stats(mr), "last5y": stats(mr[-60:]), "yearly": yearly(mrows)}
     # 벤치마크: SPY 보유
     me = adj.groupby(adj.index.to_period("M")).tail(1)
     me = me[(me.index.to_period("M") >= first_sig) & (me.index.to_period("M") <= pd.Period(END))]
