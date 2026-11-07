@@ -1,5 +1,6 @@
 config.json
-report.html
-history.json
+/report.html
+/history.json
 __pycache__/
 *.xlsx
+.installed
