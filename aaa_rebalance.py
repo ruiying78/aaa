@@ -2,7 +2,7 @@
 """
 AAA + 듀얼모멘텀 50:50 자동 리밸런싱 (Portfolio Visualizer 방식)
  - 모멘텀: 6개월 총수익률(배당 포함), 상위 5종목
- - AAA(50%): 상위 5종목을 리스크패리티(역변동성, 3개월 일별 변동성) 비중
+ - AAA(50%): 상위 5종목을 리스크패리티(공분산 기반 ERC 해찾기, 3개월 일별 수익률) 비중
  - 듀얼모멘텀(50%): 상위 5종목 각 20%, 6개월 수익률이 마이너스면 그 몫은 SGOV
  - 두 전략 비중을 합쳐 최종 매수 비중 산출 → 웹페이지(report.html)
 
@@ -94,8 +94,26 @@ def rp_weights(adj, top, today):
     rets = adj[top].pct_change().dropna()
     rets = rets[(rets.index >= vs) & (rets.index <= ve)]
     vol = rets.std(ddof=1)
-    inv = 1 / vol
-    return (inv / inv.sum()), vol, (rets.index[0], rets.index[-1], len(rets))
+    w = pd.Series(erc_weights(rets.cov().values), index=top)
+    return w, vol, (rets.index[0], rets.index[-1], len(rets))
+
+
+def erc_weights(cov, iters=1000, tol=1e-12):
+    """공분산 기반 동일위험기여(ERC) 해찾기: 각 종목의 w_i*(Σw)_i 가 같아지도록 (순환 좌표하강법)"""
+    import math
+    import numpy as np
+    n = cov.shape[0]
+    x = 1 / np.sqrt(np.diag(cov))
+    x = x / x.sum()
+    b = 1.0 / n
+    for _ in range(iters):
+        x_old = x.copy()
+        for i in range(n):
+            s = cov[i] @ x - cov[i, i] * x[i]
+            x[i] = (-s + math.sqrt(s * s + 4 * cov[i, i] * b)) / (2 * cov[i, i])
+        if np.max(np.abs(x - x_old)) < tol:
+            break
+    return x / x.sum()
 
 
 def compute(adj, today=None):
@@ -179,7 +197,7 @@ def write_xlsx(path, msig):
     ws.title = "월별 수익률"
     ws["A1"] = "AAA + 듀얼모멘텀 50:50 · 월별 수익률"
     ws["A1"].font = Font(name=F, size=14, bold=True)
-    ws["A2"] = "6개월 총수익률 Top5 · AAA(리스크패리티) 50% + 듀얼모멘텀(각 20%, 음수→SGOV) 50% · 배당 포함 · 파란색=입력값, 검은색=수식"
+    ws["A2"] = "6개월 총수익률 Top5 · AAA(리스크패리티·ERC) 50% + 듀얼모멘텀(각 20%, 음수→SGOV) 50% · 배당 포함 · 파란색=입력값, 검은색=수식"
     ws["A2"].font = Font(name=F, size=9, color="6B7280")
     hd = ["보유월", "월 수익률", "상태", "누적 수익률", "고점 대비"] + UNIVERSE
     for j, h in enumerate(hd, 1):
@@ -386,7 +404,7 @@ table.mat td,table.mat th{{padding:5px 3px;font-size:13px}}a{{color:var(--acc)}}
 {mtd_html}
 <section><h2>다음 리밸런싱 예상 비중</h2>{bars(res['final'])}</section>
 {orders}
-<div class="grid2 wrap"><section><h2>AAA 50% (리스크패리티)</h2>{bars(res['aaa'])}</section>
+<div class="grid2 wrap"><section><h2>AAA 50% (리스크패리티·ERC)</h2>{bars(res['aaa'])}</section>
 <section><h2>듀얼모멘텀 50% (각 20%)</h2>{bars(res['dm'], 't2')}</section></div>
 <section><h2>모멘텀 (6개월 총수익률)</h2><table>{mom}</table>
 <p class="muted">상위 {TOP_N}개 선정. 듀얼모멘텀에서는 마이너스 종목의 20%를 {CASH}로 대체</p></section>
@@ -394,7 +412,7 @@ table.mat td,table.mat th{{padding:5px 3px;font-size:13px}}a{{color:var(--acc)}}
 <p class="muted">예) 2026-10 = 9월 말 종가로 계산해 10월 한 달 보유</p></section>
 <section><h2>종목별 비중 (%)</h2><div class="scroll"><table class="mat">{mat}</table></div>
 <p class="muted">마지막 행은 지난 12개월 중 편입된 횟수</p></section>
-<section><details><summary>AAA 리스크패리티 상세 (변동성 기간 {vtxt})</summary>
+<section><details><summary>AAA 리스크패리티(ERC, 공분산 해찾기) 상세 (기간 {vtxt})</summary>
 <table><tr><th>종목</th><th>일변동성</th><th>AAA 비중</th></tr>{detail}</table></details></section>
 <p class="muted">맨 위 비중은 가격 기준일 종가로 미리 계산한 값이며, 월말 종가로 확정됩니다. 투자 판단의 책임은 본인에게 있습니다.</p>
 </main></body></html>"""
