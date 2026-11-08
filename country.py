@@ -52,6 +52,13 @@ def run(mpx, dret, months, mode):
         s = {t: mom(mpx, i, t) for t in uni}
         s = {t: v for t, v in s.items() if v is not None}
         top = sorted(s, key=lambda x: (-s[x], uni.index(x)))[:5]
+        if mode.startswith("g"):  # 게이트: VGK/EEM이 Top5에 들었을 때만 국가 1위로 교체
+            for base_t, pool, key, on in (("VGK", DEV, "DEV", mode in ("gdev", "gboth")),
+                                          ("EEM", EMG, "EM", mode in ("gem", "gboth"))):
+                if on and base_t in top:
+                    b = best_of(mpx, dret, pool, p, i)
+                    if b:
+                        top[top.index(base_t)] = b; s[b] = mom(mpx, i, b); pk[key] = b
         nxt = mpx.loc[p1] / mpx.loc[p] - 1
         wa = aaa_weights(dret, top, p, "erc")
         ra = sum(w * nxt[t] for t, w in wa.items())
@@ -75,7 +82,7 @@ def main():
     first = max(adj[t].first_valid_index() for t in BASE).to_period("M") + 7
     months = [p for p in mpx.index if first <= p <= pd.Period("2026-10")]
     res = {"available": {t: str(adj[t].first_valid_index().date()) for t in adj.columns if adj[t].notna().any()}}
-    for mode in ["base", "dev", "em", "both"]:
+    for mode in ["base", "dev", "em", "both", "gdev", "gem", "gboth"]:
         r, h, pk = run(mpx, dret, months, mode)
         yr = {}
         for x, m in zip(r, h):
