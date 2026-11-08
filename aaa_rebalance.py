@@ -121,14 +121,18 @@ def compute(adj, today=None):
 def monthly_signals(adj, n=12):
     """지난 n개월: 각 월말 종가로 계산 → 다음 달 보유"""
     out = []
-    me = month_ends(adj).index
-    me = [d for d in me if d.to_period("M") < adj.index[-1].to_period("M")]
+    allme = list(month_ends(adj).index)
+    me = [d for d in allme if d.to_period("M") < adj.index[-1].to_period("M")]
     for d in me[-n:]:
         sub = adj[adj.index <= d]
         if len(month_ends(sub)) < LOOKBACK + 1:
             continue
         r = compute(sub, today=d.to_period("M").end_time.normalize())
-        out.append({"hold": str(d.to_period("M") + 1), "final": r["final"], "top": r["top"]})
+        d1 = allme[allme.index(d) + 1]
+        ret = sum(w * (adj.at[d1, t] / adj.at[d, t] - 1) for t, w in r["final"].items())
+        out.append({"hold": str(d.to_period("M") + 1), "final": r["final"], "top": r["top"],
+                    "ret": float(ret), "partial": d1 == adj.index[-1] and d1.to_period("M") == adj.index[-1].to_period("M")
+                    and d1 != (d1 + pd.offsets.BMonthEnd(0))})
     return out
 
 
@@ -230,9 +234,17 @@ def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
     vtxt = f"{vw[0]:%Y-%m-%d} ~ {vw[1]:%Y-%m-%d}, {vw[2]}영업일"
     detail = "".join(f"<tr><td class='tk'>{e(t)}</td><td class='num'>{pct(float(res['vol'][t]),3)}</td>"
                      f"<td class='num'>{pct(res['aaa'][t])}</td></tr>" for t in res["top"])
-    mtab = "".join(f"<tr><td style='white-space:nowrap'><b>{m['hold']}</b></td><td style='text-align:left'>"
+    mtab = "".join(f"<tr><td style='white-space:nowrap'><b>{m['hold']}</b></td>"
+                   f"<td class='num {'buy' if m['ret'] >= 0 else 'sell'}'>{m['ret']*100:+.2f}%{'*' if m['partial'] else ''}</td>"
+                   "<td style='text-align:left;font-size:13px'>"
                    + " · ".join(f"{e(t)} {w*100:.1f}%" for t, w in m["final"].items()) + "</td></tr>"
                    for m in reversed(msig))
+    done = [m["ret"] for m in msig if not m["partial"]]
+    cum = 1.0
+    for x in done:
+        cum *= 1 + x
+    msum = (f"<p class='muted'>완료된 {len(done)}개월 누적 {(cum-1)*100:+.2f}% · 플러스 {sum(x >= 0 for x in done)}개월 / "
+            f"마이너스 {sum(x < 0 for x in done)}개월 · * 진행 중인 달</p>") if done else ""
     change = ""
     if len(hist) >= 2 and set(hist[-1]["top"]) != set(hist[-2]["top"]):
         a = sorted(set(hist[-1]["top"]) - set(hist[-2]["top"]))
@@ -279,7 +291,7 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 <section><h2>듀얼모멘텀 50% (각 20%)</h2>{bars(res['dm'], 't2')}</section></div>
 <section><h2>모멘텀 (6개월 총수익률)</h2><table>{mom}</table>
 <p class="muted">상위 {TOP_N}개 선정. 듀얼모멘텀에서는 마이너스 종목의 20%를 {CASH}로 대체</p></section>
-<section><h2>월별 매수 종목 (전월 말 기준)</h2><div class="scroll"><table><tr><th style="text-align:left">보유월</th><th style="text-align:left">최종 비중</th></tr>{mtab}</table></div>
+<section><h2>월별 수익률 · 매수 종목 (전월 말 기준)</h2>{msum}<div class="scroll"><table><tr><th style="text-align:left">보유월</th><th>수익률</th><th style="text-align:left">최종 비중</th></tr>{mtab}</table></div>
 <p class="muted">예) 2026-10 = 9월 말 종가로 계산해 10월 한 달 보유</p></section>
 <section><details><summary>AAA 리스크패리티 상세 (변동성 기간 {vtxt})</summary>
 <table><tr><th>종목</th><th>일변동성</th><th>AAA 비중</th></tr>{detail}</table></details></section>
