@@ -149,6 +149,92 @@ def month_to_date(adj, msig):
     return {"hold": cur["hold"], "from": d0, "to": adj.index[-1], "w": cur["final"], "r": r, "total": total}
 
 
+def track_stats(msig):
+    """월별 수익률 요약 (진행 중인 달은 낙폭에만 포함)"""
+    done = [m["ret"] for m in msig if not m["partial"]]
+    if not done:
+        return None
+    eq, peak, dd, cur = 1.0, 1.0, 0.0, 0.0
+    for m in msig:
+        eq *= 1 + m["ret"]
+        peak = max(peak, eq)
+        cur = eq / peak - 1
+        dd = min(dd, cur)
+    cum = 1.0
+    for x in done:
+        cum *= 1 + x
+    return {"n": len(done), "cum": cum - 1, "ann": cum ** (12 / len(done)) - 1,
+            "best": max(done), "worst": min(done), "mdd": dd, "cur_dd": cur,
+            "pos": sum(x >= 0 for x in done), "neg": sum(x < 0 for x in done)}
+
+
+def write_xlsx(path, msig):
+    """월별 수익률 엑셀 (누적·낙폭·요약은 수식)"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter as L
+    F = "Arial"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "월별 수익률"
+    ws["A1"] = "AAA + 듀얼모멘텀 50:50 · 월별 수익률"
+    ws["A1"].font = Font(name=F, size=14, bold=True)
+    ws["A2"] = "6개월 총수익률 Top5 · AAA(리스크패리티) 50% + 듀얼모멘텀(각 20%, 음수→SGOV) 50% · 배당 포함 · 파란색=입력값, 검은색=수식"
+    ws["A2"].font = Font(name=F, size=9, color="6B7280")
+    hd = ["보유월", "월 수익률", "상태", "누적 수익률", "고점 대비"] + UNIVERSE
+    for j, h in enumerate(hd, 1):
+        c = ws.cell(4, j, h)
+        c.font = Font(name=F, size=10, bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="1F2937")
+        c.alignment = Alignment(horizontal="center")
+    first = 5
+    blue, base = Font(name=F, size=10, color="0000FF"), Font(name=F, size=10)
+    yel = PatternFill("solid", fgColor="FEF3C7")
+    for i, m in enumerate(msig):
+        r = first + i
+        ws.cell(r, 1, m["hold"]).font = base
+        c = ws.cell(r, 2, round(m["ret"], 6)); c.font = blue; c.number_format = "0.00%"
+        ws.cell(r, 3, "진행 중" if m["partial"] else "완료").font = base
+        prev = f"D{r-1}" if i else "0"
+        c = ws.cell(r, 4, f"=(1+{prev})*(1+B{r})-1"); c.font = base; c.number_format = "0.00%"
+        c = ws.cell(r, 5, f"=(1+D{r})/MAX(1,1+MAX($D${first}:D{r}))-1"); c.font = base; c.number_format = "0.00%"
+        for j, t in enumerate(UNIVERSE, 6):
+            v = m["final"].get(t, 0)
+            c = ws.cell(r, j, round(v, 4) if v else 0); c.font = blue; c.number_format = "0.0%;-0.0%;-"
+        if m["partial"]:
+            for j in range(1, len(hd) + 1):
+                ws.cell(r, j).fill = yel
+    last = first + len(msig) - 1
+    s0 = last + 2
+    rng_b, rng_c = f"B{first}:B{last}", f"C{first}:C{last}"
+    items = [("완료 개월 수", f'=COUNTIF({rng_c},"완료")', "0"),
+             ("누적 수익률 (완료)", f'=SUMPRODUCT((({rng_c})="완료")*LN(1+{rng_b}))', None),
+             ("월평균 수익률", f'=AVERAGEIF({rng_c},"완료",{rng_b})', "0.00%"),
+             ("플러스 개월", f'=COUNTIFS({rng_c},"완료",{rng_b},">=0")', "0"),
+             ("마이너스 개월", f'=COUNTIFS({rng_c},"완료",{rng_b},"<0")', "0"),
+             ("최고의 달", f'=_xlfn.MAXIFS({rng_b},{rng_c},"완료")', "0.00%"),
+             ("최악의 달", f'=_xlfn.MINIFS({rng_b},{rng_c},"완료")', "0.00%"),
+             ("최대 낙폭", f"=MIN(E{first}:E{last})", "0.00%"),
+             ("현재 고점 대비", f"=E{last}", "0.00%")]
+    ws.cell(s0, 1, "요약").font = Font(name=F, size=10, bold=True)
+    for k, (a, f, nf) in enumerate(items, 1):
+        ws.cell(s0 + k, 1, a).font = base
+        c = ws.cell(s0 + k, 2, f); c.font = base
+        if nf:
+            c.number_format = nf
+    # 누적은 로그합 → 지수 변환
+    lr = s0 + 2
+    ws.cell(lr, 2).value = f'=EXP(SUMPRODUCT((({rng_c})="완료")*LN(1+{rng_b})))-1'
+    ws.cell(lr, 2).number_format = "0.00%"
+    ws.cell(s0 + len(items) + 1, 1, "연환산 수익률").font = base
+    c = ws.cell(s0 + len(items) + 1, 2, f"=(1+B{lr})^(12/B{s0+1})-1"); c.font = base; c.number_format = "0.00%"
+    ws.column_dimensions["A"].width = 18
+    for j in range(2, len(hd) + 1):
+        ws.column_dimensions[L(j)].width = 10 if j <= 5 else 7
+    ws.freeze_panes = "B5"
+    wb.save(path)
+
+
 def order_table(res, raw, capital, fx, holdings):
     last = raw.ffill().iloc[-1]
     rows = []
@@ -239,12 +325,22 @@ def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
                    "<td style='text-align:left;font-size:13px'>"
                    + " · ".join(f"{e(t)} {w*100:.1f}%" for t, w in m["final"].items()) + "</td></tr>"
                    for m in reversed(msig))
-    done = [m["ret"] for m in msig if not m["partial"]]
-    cum = 1.0
-    for x in done:
-        cum *= 1 + x
-    msum = (f"<p class='muted'>완료된 {len(done)}개월 누적 {(cum-1)*100:+.2f}% · 플러스 {sum(x >= 0 for x in done)}개월 / "
-            f"마이너스 {sum(x < 0 for x in done)}개월 · * 진행 중인 달</p>") if done else ""
+    st = track_stats(msig)
+    msum = ""
+    if st:
+        kp = [("누적 (완료 " + str(st["n"]) + "개월)", st["cum"]), ("연환산", st["ann"]), ("최고의 달", st["best"]),
+              ("최악의 달", st["worst"]), ("최대 낙폭", st["mdd"]), ("현재 고점 대비", st["cur_dd"])]
+        msum = ("<div class='kpis'>" + "".join(
+            f"<div class='kpi'><span>{a}</span><b class='{'buy' if v >= 0 else 'sell'}'>{v*100:+.2f}%</b></div>" for a, v in kp)
+            + f"</div><p class='muted'>플러스 {st['pos']}개월 / 마이너스 {st['neg']}개월 · * 진행 중인 달 · "
+            "<a href='monthly.xlsx' download>엑셀 다운로드</a></p>")
+    used = [t for t in UNIVERSE if any(t in m["final"] for m in msig)]
+    mat = ("<tr><th style='text-align:left'>보유월</th>" + "".join(f"<th>{e(t)}</th>" for t in used) + "</tr>"
+           + "".join("<tr><td style='white-space:nowrap'><b>" + m["hold"][2:] + "</b></td>" + "".join(
+               f"<td class='num'>{m['final'][t]*100:.0f}</td>" if t in m["final"] else "<td class='num muted'>·</td>"
+               for t in used) + "</tr>" for m in reversed(msig))
+           + "<tr><td><b>편입</b></td>" + "".join(
+               f"<td class='num'><b>{sum(t in m['final'] for m in msig)}</b></td>" for t in used) + "</tr>")
     change = ""
     if len(hist) >= 2 and set(hist[-1]["top"]) != set(hist[-2]["top"]):
         a = sorted(set(hist[-1]["top"]) - set(hist[-2]["top"]))
@@ -280,6 +376,9 @@ b.pos{{background:var(--pos)}}b.neg{{background:var(--neg)}}tr.sel .tk{{color:va
 .tag{{font-size:12px;color:var(--mut);text-align:right;width:80px}}.buy{{color:var(--pos);font-weight:600}}.sell{{color:var(--neg);font-weight:600}}
 .scroll{{overflow-x:auto}}.alert{{margin-top:14px;padding:10px 12px;border-radius:10px;background:#fef3c7;color:#92400e;font-size:14px}}
 details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
+.kpis{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:8px}}.kpi{{border:1px solid var(--line);border-radius:10px;padding:10px}}
+.kpi span{{display:block;font-size:12px;color:var(--mut)}}.kpi b{{font-size:18px;font-variant-numeric:tabular-nums}}
+table.mat td,table.mat th{{padding:5px 3px;font-size:13px}}a{{color:var(--acc)}}
 </style></head><body><main>
 <header><h1>AAA + 듀얼모멘텀 50:50 · 리밸런싱 신호</h1>
 <div class="muted">가격 기준일 {asof} · 갱신 {kst} KST · 데이터 {e(src)} · 6개월 총수익률 · Top{TOP_N}</div></header>
@@ -293,6 +392,8 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 <p class="muted">상위 {TOP_N}개 선정. 듀얼모멘텀에서는 마이너스 종목의 20%를 {CASH}로 대체</p></section>
 <section><h2>월별 수익률 · 매수 종목 (전월 말 기준)</h2>{msum}<div class="scroll"><table><tr><th style="text-align:left">보유월</th><th>수익률</th><th style="text-align:left">최종 비중</th></tr>{mtab}</table></div>
 <p class="muted">예) 2026-10 = 9월 말 종가로 계산해 10월 한 달 보유</p></section>
+<section><h2>종목별 비중 (%)</h2><div class="scroll"><table class="mat">{mat}</table></div>
+<p class="muted">마지막 행은 지난 12개월 중 편입된 횟수</p></section>
 <section><details><summary>AAA 리스크패리티 상세 (변동성 기간 {vtxt})</summary>
 <table><tr><th>종목</th><th>일변동성</th><th>AAA 비중</th></tr>{detail}</table></details></section>
 <p class="muted">맨 위 비중은 가격 기준일 종가로 미리 계산한 값이며, 월말 종가로 확정됩니다. 투자 판단의 책임은 본인에게 있습니다.</p>
@@ -335,6 +436,10 @@ def main():
     msig = monthly_signals(adj)
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(build_html(res, adj, rows, hist, msig, capital, fx, src, month_to_date(adj, msig)))
+    try:
+        write_xlsx(os.path.join(os.path.dirname(os.path.abspath(a.out)), "monthly.xlsx"), msig)
+    except Exception as ex:
+        print(f"엑셀 생성 실패: {ex}")
     print(f"\n기준일 {asof}  Top5: {', '.join(res['top'])}")
     for t, w in res["final"].items():
         print(f"  {t:5s} {w:7.2%}")
