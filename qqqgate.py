@@ -69,7 +69,8 @@ def main():
     mB = [p for p in b.groupby(b.index.to_period("M")).tail(1).index.to_period("M") if first <= p <= LAST]
     res = {"qqq_start": str(raw["QQQ"].first_valid_index().date())}
     for tag, df, ms in (("A", a, mA), ("B", b, mB)):
-        for nm, uni, g in (("12", T12, False), ("13", T13, False), ("12g", T12, True)):
+        for nm, uni, g in (("12", T12, False), ("13", T13, False), ("12g", T12, True),
+                         ("12q", ["QQQ" if t == "SPY" else t for t in T12], False)):
             R, hold, nin = run(df, ms, uni, g)
             for k, r in R.items():
                 res[f"{tag}_{nm}_{k}"] = pack(r, hold)
