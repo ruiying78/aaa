@@ -38,11 +38,19 @@ MIX = {"AAA": 0.5, "DM": 0.5}
 def load_prices(tickers, start):
     """(배당조정 종가, 실제 종가, 출처)"""
     try:
+        import time
         import yfinance as yf
-        df = yf.download(tickers, start=start, auto_adjust=False, progress=False)
-        adj, raw = df["Adj Close"][tickers], df["Close"][tickers]
-        if adj.dropna(how="all").empty:
-            raise ValueError("empty")
+        adj = raw = None
+        for k in range(4):  # 일부 종목 다운로드 실패(캐시 잠금 등) 시 재시도
+            df = yf.download(tickers, start=start, auto_adjust=False, progress=False, threads=False)
+            adj, raw = df["Adj Close"].reindex(columns=tickers), df["Close"].reindex(columns=tickers)
+            miss = [t for t in tickers if adj[t].dropna().empty]
+            if not miss:
+                break
+            print(f"다운로드 누락 {miss} → 재시도 {k + 1}")
+            time.sleep(5)
+        if adj is None or any(adj[t].dropna().empty for t in tickers):
+            raise ValueError("일부 종목 데이터 없음")
         return adj.sort_index(), raw.sort_index(), "Yahoo"
     except Exception as e:
         print(f"Yahoo 실패({e}) → stooq 시도")
