@@ -299,10 +299,24 @@ def bars(weights, cls=""):
                    for t, w in weights.items())
 
 
+def is_live(last_day):
+    """마지막 가격이 '오늘' 미국 장중 가격인지 (뉴욕 시간 9:30~16:00, 평일)"""
+    try:
+        from zoneinfo import ZoneInfo
+        ny = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return False
+    t = ny.hour * 60 + ny.minute
+    return ny.weekday() < 5 and last_day.date() == ny.date() and 570 <= t < 960
+
+
 def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
     e = html.escape
     asof = adj.index[-1].strftime("%Y-%m-%d")
-    kst = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+    now_k = datetime.now(timezone(timedelta(hours=9)))
+    kst = f"{now_k:%Y-%m-%d %H:%M} KST (베이징 {now_k - timedelta(hours=1):%H:%M})"
+    live = is_live(adj.index[-1])
+    ptxt = "장중가(약 15분 지연)" if live else "종가"
 
     smax = max(float(res["score"].abs().max()), 0.01)
     mom = ""
@@ -372,7 +386,7 @@ def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
                       f"<td class='num'>{w*mtd['r'][t]*100:+.2f}%p</td></tr>" for t, w in mtd["w"].items())
         tc = "buy" if mtd["total"] >= 0 else "sell"
         mtd_html = (f"<section><h2>{mtd['hold']} 보유분 수익률 <span class='{tc}'>{mtd['total']*100:+.2f}%</span></h2>"
-                    f"<p class='muted'>{mtd['from']:%Y-%m-%d} 종가 → {mtd['to']:%Y-%m-%d} 종가 · 배당 포함</p>"
+                    f"<p class='muted'>{mtd['from']:%Y-%m-%d} 종가 → {mtd['to']:%Y-%m-%d} {ptxt} · 배당 포함</p>"
                     f"<table><tr><th>종목</th><th>비중</th><th>수익률</th><th>기여도</th></tr>{rws}</table></section>")
 
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
@@ -399,7 +413,7 @@ details summary{{cursor:pointer;font-size:14px;color:var(--mut)}}
 table.mat td,table.mat th{{padding:5px 3px;font-size:13px}}a{{color:var(--acc)}}
 </style></head><body><main>
 <header><h1>AAA + 듀얼모멘텀 50:50 · 리밸런싱 신호</h1>
-<div class="muted">가격 기준일 {asof} · 갱신 {kst} KST · 데이터 {e(src)} · 6개월 총수익률 · Top{TOP_N}</div></header>
+<div class="muted">가격 기준일 {asof} {ptxt} · 갱신 {kst} · 데이터 {e(src)} · 6개월 총수익률 · Top{TOP_N}</div></header>
 {change}
 {mtd_html}
 <section><h2>다음 리밸런싱 예상 비중</h2>{bars(res['final'])}</section>
