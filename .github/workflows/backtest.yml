@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: mkdir -p docs && python ashr.py docs/ashr.json && python aaamethods.py docs/aaamethods.json && python voltgt.py docs/voltgt.json && python stack.py docs/stack.json && python btcalt.py docs/btcalt.json && python pv12x.py docs/pv12x.json && python pv12.py docs/pv12.json && python backtest.py docs/backtest.json && python backtest_long.py docs/backtest_long.json && python grid.py docs/grid.json && python erc.py docs/erc.json && python country.py docs/country.json
+      - run: mkdir -p docs && python qqq.py docs/qqq.json && python ashr.py docs/ashr.json && python aaamethods.py docs/aaamethods.json && python voltgt.py docs/voltgt.json && python stack.py docs/stack.json && python btcalt.py docs/btcalt.json && python pv12x.py docs/pv12x.json && python pv12.py docs/pv12.json && python backtest.py docs/backtest.json && python backtest_long.py docs/backtest_long.json && python grid.py docs/grid.json && python erc.py docs/erc.json && python country.py docs/country.json
       - name: 결과 커밋
         run: |
           git config user.name "aaa-bot"
