@@ -32,6 +32,7 @@ LOOKBACK = 6            # 모멘텀: 6개월 총수익률
 TOP_N = 5
 VOL_MONTHS = 3          # 변동성: 달력상 3개월 (실행일이 말일이면 그 달 포함, 아니면 직전 달까지)
 MIX = {"AAA": 0.5, "DM": 0.5}
+BAND = 0.03             # 계속 보유 종목: 현재 보유비중과 산출비중 차이가 3%p 미만이면 매매 생략 (차이는 SGOV로 흡수)
 
 
 # ───────────── 데이터 ─────────────
@@ -162,6 +163,60 @@ def monthly_signals(adj, n=12):
     return out
 
 
+def apply_band(cur, tgt, band=BAND):
+    """cur(현재 보유비중)·tgt(산출비중) → (실행비중, 매매 생략 종목)"""
+    new, skip = {}, []
+    for t in set(cur) | set(tgt):
+        c, g = cur.get(t, 0.0), tgt.get(t, 0.0)
+        if t != CASH and c > 0 and g > 0 and abs(g - c) < band:
+            new[t] = c
+            if abs(g - c) > 1e-9:
+                skip.append(t)
+        else:
+            new[t] = g
+    new[CASH] = new.get(CASH, 0.0) + (1 - sum(new.values()))
+    if new[CASH] < -1e-9:              # SGOV로 메울 수 없으면 산출비중대로
+        return dict(tgt), []
+    new = {t: v for t, v in new.items() if v > 1e-6}
+    return dict(sorted(new.items(), key=lambda kv: -kv[1])), skip
+
+
+def drift(w, adj, d0, d1):
+    v = {t: x * adj.at[d1, t] / adj.at[d0, t] for t, x in w.items()}
+    tot = sum(v.values())
+    return {t: x / tot for t, x in v.items()}
+
+
+def band_path(adj, msig, res):
+    """지난 n개월을 밴드 규칙대로 운용했다고 보고 월별 보유비중·수익률을 다시 계산 (msig 덮어씀).
+    반환: 다음 리밸런싱 실행비중, 비교표"""
+    if not msig:
+        return dict(res["final"]), []
+    allme = list(month_ends(adj).index)
+    bym = {d.to_period("M"): d for d in allme}
+    held, prev_d = None, None
+    for m in msig:
+        d = bym[pd.Period(m["hold"]) - 1]
+        d1 = allme[allme.index(d) + 1]
+        m["calc"] = m["final"]; m["calc_ret"] = m["ret"]
+        if held is None:
+            held, skip = dict(m["final"]), []
+        else:
+            held, skip = apply_band(drift(held, adj, prev_d, d), m["final"])
+        m["final"], m["skip"] = held, skip
+        m["ret"] = float(sum(w * (adj.at[d1, t] / adj.at[d, t] - 1) for t, w in held.items()))
+        prev_d = d
+    last = adj.index[-1]
+    cur = drift(held, adj, prev_d, last) if last != prev_d else held
+    exe, skip = apply_band(cur, res["final"])
+    rows = []
+    for t in sorted(set(cur) | set(res["final"]) | set(exe), key=lambda t: -exe.get(t, 0)):
+        c, g, x = cur.get(t, 0.0), res["final"].get(t, 0.0), exe.get(t, 0.0)
+        act = "유지(생략)" if t in skip else ("매도" if x < c - 1e-6 else ("매수" if x > c + 1e-6 else "유지"))
+        rows.append({"t": t, "cur": c, "calc": g, "exec": x, "act": act})
+    return exe, rows
+
+
 def month_to_date(adj, msig):
     """이번 달 보유분(전월 말 신호)의 월초 이후 수익률"""
     if not msig:
@@ -264,7 +319,8 @@ def write_xlsx(path, msig):
 def order_table(res, raw, capital, fx, holdings):
     last = raw.ffill().iloc[-1]
     rows = []
-    for t, w in res["final"].items():
+    tgt = res.get("exec", res["final"])
+    for t, w in tgt.items():
         row = {"ticker": t, "final": w, "price": float(last[t])}
         if capital and fx:
             amt = capital * w / fx
@@ -276,7 +332,7 @@ def order_table(res, raw, capital, fx, holdings):
         rows.append(row)
     if capital and fx and holdings:
         for t, q in holdings.items():
-            if t not in res["final"] and int(q):
+            if t not in tgt and int(q):
                 rows.append({"ticker": t, "final": 0.0, "price": float(last.get(t, float("nan"))),
                              "target_qty": 0, "held": int(q), "trade": -int(q)})
     return rows
@@ -356,6 +412,13 @@ def build_html(res, adj, rows, hist, msig, capital, fx, src, mtd=None):
         orders = f"""<section><h2>매매 수량</h2><p class="muted">투자금 {capital:,.0f}원 · 환율 {fx:,.2f}원 · 소수점 이하 버림</p>
 <div class="scroll"><table><tr>{head}</tr>{body}</table></div></section>"""
 
+    band_html = ""
+    if res.get("band_rows"):
+        brs = "".join(f"<tr><td class='tk'>{e(r['t'])}</td><td class='num'>{pct(r['cur'])}</td><td class='num'>{pct(r['calc'])}</td>"
+                      f"<td class='num'><b>{pct(r['exec'])}</b></td><td style='text-align:right' class='{'buy' if r['act']=='매수' else ('sell' if r['act']=='매도' else 'muted')}'>{r['act']}</td></tr>"
+                      for r in res["band_rows"])
+        band_html = (f"<details open><summary>현재 보유 → 산출 → 실행 비중</summary><table><tr><th>종목</th><th>현재 보유</th><th>산출</th><th>실행</th><th>매매</th></tr>{brs}</table>"
+                     f"<p class='muted'>현재 보유 = 지난 12개월을 이 규칙대로 운용했다고 가정한 비중(가격 변동 반영). 계속 보유 종목은 산출 비중과 차이가 {BAND*100:.0f}%p 미만이면 매매를 생략하고, 그 차이는 {CASH}로 흡수합니다. 월별 수익률·엑셀도 밴드 적용 기준입니다.</p></details>")
     vw = res["vwin"]
     vtxt = f"{vw[0]:%Y-%m-%d} ~ {vw[1]:%Y-%m-%d}, {vw[2]}영업일"
     detail = "".join(f"<tr><td class='tk'>{e(t)}</td><td class='num'>{pct(float(res['vol'][t]),3)}</td>"
@@ -424,7 +487,8 @@ table.mat td,table.mat th{{padding:5px 3px;font-size:13px}}a{{color:var(--acc)}}
 <div class="muted">가격 기준일 {asof} {ptxt} · 갱신 {kst} · 데이터 {e(src)} · 6개월 총수익률 · Top{TOP_N}</div></header>
 {change}
 {mtd_html}
-<section><h2>다음 리밸런싱 예상 비중</h2>{bars(res['final'])}</section>
+<section><h2>다음 리밸런싱 예상 비중 <span class="muted">(±{BAND*100:.0f}%p 밴드 적용)</span></h2>{bars(res.get('exec', res['final']))}
+{band_html}</section>
 {orders}
 <div class="grid2 wrap"><section><h2>AAA 50% (리스크패리티·ERC)</h2>{bars(res['aaa'])}</section>
 <section><h2>듀얼모멘텀 50% (각 20%)</h2>{bars(res['dm'], 't2')}</section></div>
@@ -468,12 +532,13 @@ def main():
     adj, raw, src = load_prices(UNIVERSE, start)
     adj = adj.ffill().dropna()
     res = compute(adj)
+    msig = monthly_signals(adj)
+    res["exec"], res["band_rows"] = band_path(adj, msig, res)
     if capital and not fx:
         fx = load_fx(start)
     rows = order_table(res, raw, capital, fx, holdings)
     asof = adj.index[-1].strftime("%Y-%m-%d")
     hist = update_history(os.path.join(os.path.dirname(os.path.abspath(a.out)), "history.json"), asof, res)
-    msig = monthly_signals(adj)
     with open(a.out, "w", encoding="utf-8") as f:
         f.write(build_html(res, adj, rows, hist, msig, capital, fx, src, month_to_date(adj, msig)))
     try:
@@ -481,8 +546,8 @@ def main():
     except Exception as ex:
         print(f"엑셀 생성 실패: {ex}")
     print(f"\n기준일 {asof}  Top5: {', '.join(res['top'])}")
-    for t, w in res["final"].items():
-        print(f"  {t:5s} {w:7.2%}")
+    for t, w in res["exec"].items():
+        print(f"  {t:5s} {w:7.2%}  (산출 {res['final'].get(t, 0):.2%})")
     print(f"\n결과 페이지: {a.out}")
     if not a.no_open:
         webbrowser.open("file://" + os.path.abspath(a.out))
