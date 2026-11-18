@@ -140,16 +140,16 @@
   "top": [
    "DBMF",
    "SGOV",
-   "PDBC",
    "IYR",
+   "PDBC",
    "VGK"
   ],
   "weights": {
    "SGOV": 0.7651,
    "DBMF": 0.1112,
-   "PDBC": 0.106,
+   "IYR": 0.108,
    "VGK": 0.0097,
-   "IYR": 0.008
+   "PDBC": 0.006
   }
  }
 ]
