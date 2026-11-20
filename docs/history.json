@@ -174,9 +174,9 @@
   "top": [
    "DBMF",
    "SGOV",
-   "IYR",
    "PDBC",
-   "IEF"
+   "IEF",
+   "IYR"
   ],
   "weights": {
    "SGOV": 0.8441,
