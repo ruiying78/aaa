@@ -1,25 +1,74 @@
-name: AAA 백테스트
-
-on:
-  workflow_dispatch:
-
+name: AAA historical drawdown research
+on: workflow_dispatch
 permissions:
-  contents: write
-
+  contents: read
 jobs:
-  backtest:
+  research:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: mkdir -p docs && python openexec.py docs/openexec.json && python clse.py docs/clse.json && python improve.py docs/improve.json && python smid.py docs/smid.json && python qqqgate.py docs/qqqgate.json && python qqq.py docs/qqq.json && python ashr.py docs/ashr.json && python aaamethods.py docs/aaamethods.json && python voltgt.py docs/voltgt.json && python stack.py docs/stack.json && python btcalt.py docs/btcalt.json && python pv12x.py docs/pv12x.json && python pv12.py docs/pv12.json && python backtest.py docs/backtest.json && python backtest_long.py docs/backtest_long.json && python grid.py docs/grid.json && python erc.py docs/erc.json && python country.py docs/country.json
-      - name: 결과 커밋
+      - name: Run historical comparison
         run: |
-          git config user.name "aaa-bot"
-          git config user.email "aaa-bot@users.noreply.github.com"
-          git add docs/
-          git diff --cached --quiet || git commit -m "백테스트 결과"
-          git push
+          python - <<'PY'
+          import pandas as pd
+          import yfinance as yf
+          import aaa_rebalance as a
+
+          tickers = a.UNIVERSE + ['DBC', 'BIL', 'AQMIX', 'BTC-USD']
+          data = yf.download(tickers, start='2004-01-01', end='2026-11-20', auto_adjust=False, progress=False, threads=False)['Adj Close']
+          if data.reindex(columns=tickers).isna().all().any():
+              print('Missing:', data.reindex(columns=tickers).columns[data.reindex(columns=tickers).isna().all()].tolist())
+          data = data.loc[data.SPY.notna()]
+          data = a.normalize_bito_split(data)
+          native = data[a.UNIVERSE].ffill(limit=3)
+          linked = native.copy()
+          for target, proxy in {'PDBC':'DBC','SGOV':'BIL','DBMF':'AQMIX','BITO':'BTC-USD'}.items():
+              base = data[proxy].ffill(limit=3)
+              first = native[target].first_valid_index()
+              if base.notna().any():
+                  linked.loc[:first, target] = (base * native.at[first,target] / base.at[first]).loc[:first].combine_first(native[target])
+              print('PROXY', target, proxy, base.first_valid_index(), first)
+          # The overlap date anchors levels. Its actual ETF observation remains authoritative.
+          for t in a.UNIVERSE:
+              first = native[t].first_valid_index()
+              linked.at[first,t] = native.at[first,t]
+          for t in a.UNIVERSE:
+              print('COVERAGE', t, linked[t].first_valid_index(), native[t].first_valid_index())
+
+          def run(px, first, label):
+              monthly = a.month_ends(px)
+              held = prev = None
+              rows = []
+              current = px.index[-1].to_period('M')
+              sessions = sum(px.index.to_period('M') == current)
+              for start, end in zip(monthly.index[:-1], monthly.index[1:]):
+                  if str(end.to_period('M')) < first:
+                      continue
+                  weights = a.compute(px.loc[:start], today=start.to_period('M').end_time.normalize())['final']
+                  held = dict(weights) if held is None else a.apply_band(a.drift(held, px, prev, start), weights)[0]
+                  prev = start
+                  path = px.loc[(px.index > start) & (px.index <= end), list(held)]
+                  ret = path.div(px.loc[start, list(held)]).sub(1).dot(pd.Series(held))
+                  rows.append((str(end.to_period('M')),ret.iloc[-1], ret.iloc[sessions-1] if len(ret)>=sessions else float('nan')))
+              out = pd.DataFrame(rows, columns=['month','full','same']).set_index('month')
+              hist = out.iloc[:-1]
+              now = out.iloc[-1]['full']
+              eq = (1+hist.full).cumprod()
+              print('RESULT',label,'first',hist.index[0],'last',hist.index[-1],'n',len(hist),'sessions',sessions,'now',now,'CAGR',eq.iloc[-1]**(12/len(hist))-1,'MDD_monthly',(eq/eq.cummax().clip(lower=1)-1).min(),'full_le_live',sum(hist.full<=now),'same_le_live',sum(hist.same<=now),'same_n',hist.same.count(),'full_le_site',sum(hist.full<=-.056),'same_le_site',sum(hist.same<=-.056))
+              print('WORST_FULL',label,hist.full.nsmallest(12).round(6).to_dict())
+              print('WORST_SAME',label,hist.same.nsmallest(12).round(6).to_dict())
+              print('LATEST',label,out.tail(12).round(6).to_dict()['full'])
+              print('LIVE_WEIGHTS',label,held)
+              return out
+
+          run(linked,'2008-04','linked')
+          no_btc_proxy = linked.copy()
+          no_btc_proxy['BITO'] = native['BITO']
+          run(no_btc_proxy,'2008-04','no_spot_proxy')
+          run(native,'2022-06','native')
+          run(native,'2025-12','site_replay')
+          PY
