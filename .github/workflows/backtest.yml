@@ -15,6 +15,23 @@ jobs:
         run: |
           python - <<'PY'
           import pandas as pd
+          from openpyxl import Workbook, load_workbook
+          from openpyxl.styles import Font, PatternFill
+          from openpyxl.utils import get_column_letter
+
+          wb = Workbook()
+          summary = wb.active
+          summary.title = '요약'
+          summary.append(['AAA + 듀얼모멘텀 백테스트', '2026-11-19 미국장 종가'])
+          summary.append(['6개월 총수익률 Top 5 · 월말 리밸런싱 · AAA/DM 50:50 · ±3%p 밴드'])
+          summary.append(['USD 배당 포함 · 거래비용 및 세금 미차감 · 2026-11은 진행 중'])
+          summary.append(['월말 최대낙폭은 완료 월의 월말 평가액 기준입니다.'])
+          summary.append(['시나리오', '시작월', '완료 월 수', '연복리', '월말 최대낙폭', '최악 월', '최악 월 수익률', '11월 19일까지', '14거래일차 하위 순위', '비교 월 수'])
+          sources = wb.create_sheet('데이터 출처')
+          sources.append(['자산','상장 전 대체','대체 시작','실제 시작'])
+          daily = wb.create_sheet('일별 수익률')
+          daily.append(['시나리오','보유월','미국 거래일','거래일차','월초 대비','누적 수익률'])
+          names = {'linked':'대체 데이터 포함','no_spot_proxy':'BTC 현물 대체 제외','native':'실제 ETF만','site_replay':'사이트 12개월 재현'}
           import yfinance as yf
           import aaa_rebalance as a
 
@@ -31,6 +48,7 @@ jobs:
               first = native[target].first_valid_index()
               if base.notna().any():
                   linked.loc[:first, target] = (base * native.at[first,target] / base.at[first]).loc[:first].combine_first(native[target])
+              sources.append([target, proxy, str(base.first_valid_index().date()), str(first.date())])
               print('PROXY', target, proxy, base.first_valid_index(), first)
           # The overlap date anchors levels. Its actual ETF observation remains authoritative.
           for t in a.UNIVERSE:
@@ -43,16 +61,30 @@ jobs:
               monthly = a.month_ends(px)
               held = prev = None
               rows = []
+              equity = 1.0
+              peak = 1.0
+              ws = wb.create_sheet(names[label])
+              ws.append(['보유월','상태','신호일','평가일','거래일 수','월 수익률','14거래일차 수익률','누적 수익률','고점 대비','Top 5'] + a.UNIVERSE + [t+' 기여도' for t in a.UNIVERSE])
               current = px.index[-1].to_period('M')
               sessions = sum(px.index.to_period('M') == current)
               for start, end in zip(monthly.index[:-1], monthly.index[1:]):
                   if str(end.to_period('M')) < first:
                       continue
-                  weights = a.compute(px.loc[:start], today=start.to_period('M').end_time.normalize())['final']
+                  signal = a.compute(px.loc[:start], today=start.to_period('M').end_time.normalize())
+                  weights = signal['final']
                   held = dict(weights) if held is None else a.apply_band(a.drift(held, px, prev, start), weights)[0]
                   prev = start
                   path = px.loc[(px.index > start) & (px.index <= end), list(held)]
                   ret = path.div(px.loc[start, list(held)]).sub(1).dot(pd.Series(held))
+                  month = str(end.to_period('M'))
+                  last = float(ret.iloc[-1])
+                  same = float(ret.iloc[sessions-1]) if len(ret) >= sessions else None
+                  for i, (day, r) in enumerate(ret.items(), 1):
+                      daily.append([names[label], month, str(day.date()), i, float(r), equity*(1+float(r))-1])
+                  equity *= 1+last
+                  peak = max(peak, equity)
+                  contrib = ((path.iloc[-1] / px.loc[start, list(held)]) - 1) * pd.Series(held)
+                  ws.append([month, '진행 중' if end.to_period('M') == current else '완료', str(start.date()), str(end.date()), len(ret), last, same, equity-1, equity/peak-1, ', '.join(signal['top'])] + [float(held.get(t,0)) for t in a.UNIVERSE] + [float(contrib.get(t,0)) for t in a.UNIVERSE])
                   rows.append((str(end.to_period('M')),ret.iloc[-1], ret.iloc[sessions-1] if len(ret)>=sessions else float('nan')))
               out = pd.DataFrame(rows, columns=['month','full','same']).set_index('month')
               hist = out.iloc[:-1]
@@ -63,6 +95,7 @@ jobs:
               print('WORST_SAME',label,hist.same.nsmallest(12).round(6).to_dict())
               print('LATEST',label,out.tail(12).round(6).to_dict()['full'])
               print('LIVE_WEIGHTS',label,held)
+              summary.append([names[label],hist.index[0],len(hist),eq.iloc[-1]**(12/len(hist))-1,(eq/eq.cummax().clip(lower=1)-1).min(),hist.full.idxmin(),hist.full.min(),now,1+sum(hist.same<now),hist.same.count()+1])
               return out
 
           run(linked,'2008-04','linked')
@@ -71,4 +104,37 @@ jobs:
           run(no_btc_proxy,'2008-04','no_spot_proxy')
           run(native,'2022-06','native')
           run(native,'2025-12','site_replay')
+          sources.append(['데이터','Yahoo Finance Adj Close'])
+          sources.append(['BITO','2026-11-19 1:2 병합 보정'])
+          sources.append(['BTC-USD','현물이며 BITO의 선물 롤 비용과 다름'])
+          sources.append(['대체 시계열','첫 실제 ETF 관측일의 가격 수준에 맞춰 연결'])
+          sources.append(['후보 편입','대체 데이터가 없으면 6개월 수익률 계산 가능 시점까지 제외'])
+          sheets = [(summary,5,[4,5,7,8]),(sources,1,[]),(daily,1,[5,6])]
+          sheets += [(wb[n],1,[6,7,8,9]+list(range(11,35))) for n in names.values()]
+          for ws, header, percent in sheets:
+              ws.freeze_panes = f'B{header+1}'
+              if ws is not sources:
+                  ws.auto_filter.ref = f'A{header}:{get_column_letter(ws.max_column)}{ws.max_row}'
+              for c in ws[header]:
+                  c.fill = PatternFill('solid', fgColor='18354B')
+                  c.font = Font(bold=True, color='FFFFFF')
+                  ws.column_dimensions[c.column_letter].width = max(14, len(str(c.value))*2+3)
+              for col in percent:
+                  for cells in ws.iter_cols(min_col=col,max_col=col,min_row=header+1):
+                      for c in cells:
+                          c.number_format = '0.00%;[Red]-0.00%;0.00%'
+          summary.column_dimensions['A'].width = 29
+          sources.column_dimensions['B'].width = 58
+          for n in names.values():
+              wb[n].column_dimensions['J'].width = 37
+          wb.save('AAA_Backtest_20261119.xlsx')
+          check = load_workbook('AAA_Backtest_20261119.xlsx',read_only=True)
+          for n, count in zip(names.values(), [224,224,54,12]):
+              assert check[n].max_row == count+1, (n,check[n].max_row)
+          print('Workbook verified',check.sheetnames)
           PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AAA_Backtest_20261119
+          path: AAA_Backtest_20261119.xlsx
+          if-no-files-found: error
