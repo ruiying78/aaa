@@ -36,6 +36,29 @@ BAND = 0.03             # 계속 보유 종목: 현재 보유비중과 산출비
 
 
 # ───────────── 데이터 ─────────────
+def normalize_bito_split(prices):
+    """Correct a missing 1-for-2 reverse split in the BITO price history."""
+    if "BITO" not in prices:
+        return prices
+
+    effective = pd.Timestamp("2026-11-19")
+    before = prices.index < effective
+    if before.all() or not before.any():
+        return prices
+
+    previous_close = prices.loc[effective - pd.Timedelta(days=1), "BITO"]
+    split_close = prices.loc[effective, "BITO"]
+    ratio = split_close / previous_close
+    # The provider may already have restated the pre-split prices.
+    if 0.75 <= ratio <= 1.25:
+        return prices
+    if 1.5 <= ratio <= 2.5:
+        adjusted = prices.copy()
+        adjusted.loc[before, "BITO"] *= 2
+        return adjusted
+    raise ValueError(f"Cannot verify BITO split adjustment: price ratio {ratio:.4f}")
+
+
 def load_prices(tickers, start):
     """(배당조정 종가, 실제 종가, 출처)"""
     try:
@@ -52,7 +75,7 @@ def load_prices(tickers, start):
             time.sleep(5)
         if adj is None or any(adj[t].dropna().empty for t in tickers):
             raise ValueError("일부 종목 데이터 없음")
-        return adj.sort_index(), raw.sort_index(), "Yahoo"
+        return normalize_bito_split(adj.sort_index()), raw.sort_index(), "Yahoo"
     except Exception as e:
         print(f"Yahoo 실패({e}) → stooq 시도")
     closes = {}
@@ -62,7 +85,7 @@ def load_prices(tickers, start):
                          timeout=30, headers={"User-Agent": "Mozilla/5.0"})
         closes[t] = pd.read_csv(io.StringIO(r.text), parse_dates=["Date"]).set_index("Date")["Close"]
     px = pd.DataFrame(closes)[tickers].sort_index()
-    return px, px, "stooq"
+    return normalize_bito_split(px), px, "stooq"
 
 
 def load_fx(start):
